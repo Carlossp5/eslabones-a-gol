@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>ESLABONES A GOL</title>
+
+<style>
+body { font-family: Arial; padding: 20px; }
+table { border-collapse: collapse; margin: 10px 20px 20px 0; float:left; }
+th, td { border:1px solid #ccc; padding:6px 10px; }
+.clickable { cursor:pointer; color:#0b5ed7; font-weight:bold; }
+.clickable:hover { text-decoration:underline; }
+.total-row td { font-weight:bold; background:#f3f3f3; }
+.videos { display:flex; gap:40px; clear:both; margin-top:20px; }
+video { width:360px; display:block; margin-bottom:20px; }
+</style>
+</head>
+
+<body>
+
+<h1>ESLABONES A GOL</h1>
+
+<label>Equipo:</label>
+<select id="equipo"></select>
+<button onclick="cargarEquipo()">Cargar</button>
+
+<br><br>
+
+<label><input type="radio" name="modo" value="single" checked> Partido</label>
+<label><input type="radio" name="modo" value="total"> Acumulado (todos)</label>
+<label><input type="radio" name="modo" value="custom"> Acumulado personalizado</label>
+
+<br><br>
+
+<select id="partidoSelect" size="5"></select>
+
+<div id="tablas"></div>
+<div style="clear:both;"></div>
+
+<h2>Análisis por tipo de ataque</h2>
+<div id="ataques"></div>
+
+<div style="clear:both;"></div>
+<h2>Vídeos</h2>
+
+<div class="videos">
+  <div>
+    <h3>Equipo</h3>
+    <div id="videos"><em>Selecciona un dato de la tabla.</em></div>
+  </div>
+  <div>
+    <h3>Rival</h3>
+    <div id="videos_rival"><em>Selecciona un dato de la tabla.</em></div>
+  </div>
+</div>
+
+<script>
+const API_URL = "https://g7za3a86bc.execute-api.eu-north-1.amazonaws.com/default/get_equipo_stats";
+
+let RAW_VIDEOS_PROPIOS = [];
+let RAW_VIDEOS_RIVAL = [];
+let VIDEOS_PROPIOS = [];
+let VIDEOS_RIVAL = [];
+let PARTIDOS = [];
+
+const MAP_TIPO_ATAQUE = {
+  "ABP": "ABP",
+  "CONTRAATAQUE": "Contraataque",
+  "JUEGO DIRECTO + CAIDA": "Juego Directo + Caida",
+  "JUEGO POSICIONAL": "Juego Posicional",
+  "JUGADA INDIVIDUAL": "Jugada Individual - Conduccion",
+  "PRESION ALTA EFECTIVA": "Presion Alta Efectiva",
+  "PRESION TRAS PERDIDA O DESPEJE": "Presion Tras Perdida o Despeje",
+  "SALIDA DE BALON": "Salida de Balon"
+};
+
+window.onload = cargarEquipos;
+
+async function cargarEquipos() {
+  const res = await fetch(API_URL);
+  const data = await res.json();
+  const sel = document.getElementById("equipo");
+  sel.innerHTML = "";
+  data.equipos.forEach(e => {
+    const opt = document.createElement("option");
+    opt.value = e;
+    opt.textContent = e;
+    sel.appendChild(opt);
+  });
+}
+
+async function cargarEquipo() {
+  const equipo = document.getElementById("equipo").value;
+  const res = await fetch(`${API_URL}?equipo=${encodeURIComponent(equipo)}`);
+  const data = await res.json();
+
+  RAW_VIDEOS_PROPIOS = data.videos_propios || [];
+  RAW_VIDEOS_RIVAL = data.videos_rival || [];
+  PARTIDOS = data.partidos_disponibles || [];
+
+  initPartidos();
+  recalcularContexto();
+}
+
+function initPartidos() {
+  const sel = document.getElementById("partidoSelect");
+  sel.innerHTML = "";
+
+  PARTIDOS.forEach(p => {
+    const opt = document.createElement("option");
+    opt.value = p.Partido;
+    opt.textContent = p.label;
+    sel.appendChild(opt);
+  });
+
+  sel.onchange = recalcularContexto;
+  document.querySelectorAll("input[name='modo']").forEach(r => r.onchange = recalcularContexto);
+}
+
+function recalcularContexto() {
+  const modo = document.querySelector("input[name='modo']:checked").value;
+  const sel = document.getElementById("partidoSelect");
+
+  let partidosSeleccionados = [];
+
+  if (modo === "single") {
+    sel.multiple = false;
+    sel.disabled = false;
+    partidosSeleccionados = [sel.value];
+
+  } else if (modo === "total") {
+    sel.multiple = false;
+    sel.disabled = true;
+    partidosSeleccionados = PARTIDOS.map(p => p.Partido);
+
+  } else if (modo === "custom") {
+    sel.multiple = true;
+    sel.disabled = false;
+    partidosSeleccionados = Array.from(sel.selectedOptions).map(o => o.value);
+  }
+
+  VIDEOS_PROPIOS = RAW_VIDEOS_PROPIOS.filter(v => partidosSeleccionados.includes(v.Partido));
+  VIDEOS_RIVAL = RAW_VIDEOS_RIVAL.filter(v => partidosSeleccionados.includes(v.Partido));
+
+  document.getElementById("tablas").innerHTML = "";
+  document.getElementById("ataques").innerHTML = "";
+  document.getElementById("videos").innerHTML = "<em>Selecciona un dato de la tabla.</em>";
+  document.getElementById("videos_rival").innerHTML = "<em>Selecciona un dato de la tabla.</em>";
+
+  renderTablaResumen("A favor", calcularStats(VIDEOS_PROPIOS));
+  renderTablaResumen("Rival", calcularStats(VIDEOS_RIVAL));
+  renderTablaAtaques("A favor", calcularAtaques(VIDEOS_PROPIOS));
+  renderTablaAtaques("Rival", calcularAtaques(VIDEOS_RIVAL));
+}
+
+/* =====================
+   CÁLCULOS (idénticos)
+===================== */
+function calcularStats(d) {
+  return {
+    llegadas_ultimo_tercio: d.filter(v => v.Name.startsWith("Llegada Ultimo Tercio")).length,
+    llegadas_area: d.reduce((a,v)=>a+(v["Llegada area"]||0),0),
+    tiros: d.filter(v=>v.xG>0).length,
+    goles: d.reduce((a,v)=>a+(v.Gol||0),0),
+    xG: d.reduce((a,v)=>a+v.xG,0),
+    xGOT: d.reduce((a,v)=>a+v.xGOT,0),
+    SOT: d.reduce((a,v)=>a+(v.Parada+v.Gol+v.Salvada),0)
+  };
+}
+
+function calcularAtaques(d) {
+  let filas = [];
+  for (const tipo in MAP_TIPO_ATAQUE) {
+    const col = MAP_TIPO_ATAQUE[tipo];
+    const df = d.filter(v => v[col] === 1);
+    filas.push({
+      tipo,
+      ultimo_tercio: df.length,
+      area: df.reduce((a,v)=>a+(v["Llegada area"]||0),0),
+      tiro: df.filter(v=>v.xG>0).length,
+      xG: df.reduce((a,v)=>a+v.xG,0),
+      SOT: df.reduce((a,v)=>a+(v.Parada+v.Gol+v.Salvada),0),
+      xGOT: df.reduce((a,v)=>a+v.xGOT,0),
+      gol: df.reduce((a,v)=>a+(v.Gol||0),0)
+    });
+  }
+  return filas;
+}
+
+/* =====================
+   TABLAS + VÍDEOS
+===================== */
+function renderTablaResumen(titulo, stats) {
+  const quien = titulo === "A favor" ? "propios" : "rival";
+  const filas = [
+    ["Llegadas a último tercio", "ULTIMO_TERCIO", stats.llegadas_ultimo_tercio],
+    ["Llegadas al área", "AREA", stats.llegadas_area],
+    ["Tiros", "TIRO", stats.tiros],
+    ["xG", "xG", stats.xG.toFixed(2)],
+    ["SOT", "SOT", stats.SOT],
+    ["xGOT", "xGOT", stats.xGOT.toFixed(2)],
+    ["Gol", "Gol", stats.goles]
+  ];
+
+  let html = `<table><tr><th colspan="2">${titulo}</th></tr>`;
+  filas.forEach(([label, metrica, valor]) => {
+    html += `
+      <tr>
+        <td>${label}</td>
+        <td class="clickable" onclick="filtrarVideos('${quien}', null, '${metrica}')">${valor}</td>
+      </tr>`;
+  });
+  html += "</table>";
+  document.getElementById("tablas").innerHTML += html;
+}
+
+function renderTablaAtaques(titulo, filas) {
+  const quien = titulo === "A favor" ? "propios" : "rival";
+  let total = { ultimo_tercio:0, area:0, tiro:0, xG:0, SOT:0, xGOT:0, gol:0 };
+
+  let html = `<table>
+    <tr><th colspan="8">${titulo}</th></tr>
+    <tr>
+      <th>Tipo</th><th>UT</th><th>Área</th><th>Tiro</th>
+      <th>xG</th><th>SOT</th><th>xGOT</th><th>Gol</th>
+    </tr>`;
+
+  filas.forEach(f => {
+    Object.keys(total).forEach(k => total[k] += f[k]);
+    html += filaAtaque(quien, f.tipo, f);
+  });
+
+  html += filaAtaque(quien, "TOTAL", total, true);
+  html += "</table>";
+  document.getElementById("ataques").innerHTML += html;
+}
+
+function filaAtaque(quien, tipo, f, isTotal=false) {
+  const cls = isTotal ? "total-row" : "";
+  const tipoParam = isTotal ? null : tipo;
+
+  return `
+  <tr class="${cls}">
+    <td>${tipo}</td>
+    <td class="clickable" onclick="filtrarVideos('${quien}', ${tipoParam ? `'${tipoParam}'` : 'null'}, 'ULTIMO_TERCIO')">${f.ultimo_tercio}</td>
+    <td class="clickable" onclick="filtrarVideos('${quien}', ${tipoParam ? `'${tipoParam}'` : 'null'}, 'AREA')">${f.area}</td>
+    <td class="clickable" onclick="filtrarVideos('${quien}', ${tipoParam ? `'${tipoParam}'` : 'null'}, 'TIRO')">${f.tiro}</td>
+    <td class="clickable" onclick="filtrarVideos('${quien}', ${tipoParam ? `'${tipoParam}'` : 'null'}, 'xG')">${f.xG.toFixed(2)}</td>
+    <td class="clickable" onclick="filtrarVideos('${quien}', ${tipoParam ? `'${tipoParam}'` : 'null'}, 'SOT')">${f.SOT}</td>
+    <td class="clickable" onclick="filtrarVideos('${quien}', ${tipoParam ? `'${tipoParam}'` : 'null'}, 'xGOT')">${f.xGOT.toFixed(2)}</td>
+    <td class="clickable" onclick="filtrarVideos('${quien}', ${tipoParam ? `'${tipoParam}'` : 'null'}, 'Gol')">${f.gol}</td>
+  </tr>`;
+}
+
+function filtrarVideos(quien, tipo, metrica) {
+  const videos = quien === "propios" ? VIDEOS_PROPIOS : VIDEOS_RIVAL;
+  const cont = quien === "propios" ? "videos" : "videos_rival";
+  const colTipo = tipo ? MAP_TIPO_ATAQUE[tipo] : null;
+
+  const filtrados = videos.filter(v => {
+    if (colTipo && v[colTipo] !== 1) return false;
+    if (metrica === "ULTIMO_TERCIO") return v.Name.startsWith("Llegada Ultimo Tercio");
+    if (metrica === "AREA") return (v["Llegada area"] || 0) > 0;
+    if (metrica === "TIRO") return v.xG > 0;
+    if (metrica === "SOT") return (v.Parada + v.Gol + v.Salvada) > 0;
+    if (metrica === "Gol") return v.Gol > 0;
+    if (metrica === "xG") return v.xG > 0;
+    if (metrica === "xGOT") return v.xGOT > 0;
+    return false;
+  });
+
+  renderVideos(cont, filtrados);
+}
+
+function renderVideos(containerId, videos) {
+  const cont = document.getElementById(containerId);
+  cont.innerHTML = "";
+
+  if (videos.length === 0) {
+    cont.innerHTML = "<em>No hay vídeos para este filtro.</em>";
+    return;
+  }
+
+  videos.forEach(v => {
+    let info = [];
+    if ((v["Llegada area"] || 0) > 0) info.push("Área");
+    if (v.xG > 0) info.push(`xG: ${v.xG}`);
+    if ((v.Parada + v.Gol + v.Salvada) > 0) info.push("SOT");
+    if (v.xGOT > 0) info.push(`xGOT: ${v.xGOT}`);
+    if (v.Gol > 0) info.push("Gol");
+
+    cont.innerHTML += `
+      <p><strong>[${v.Partido}] ${v.Name}</strong> – ${info.join(" – ")}</p>
+      <video controls src="${v.video_path}"></video>
+    `;
+  });
+}
+</script>
+
+</body>
+</html>
